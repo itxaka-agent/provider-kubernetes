@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -400,5 +401,102 @@ func TestRunInitRefusedWhenAnAPIServerAnswers(t *testing.T) {
 	}
 	if got := sink.only(t); got.Reason != status.ReasonInitRefused {
 		t.Fatalf("recorded reason=%q, want %q", got.Reason, status.ReasonInitRefused)
+	}
+}
+
+// splitTestEndpoint returns the host and port of a test server's "host:port".
+func splitTestEndpoint(t *testing.T, ep string) (string, string) {
+	t.Helper()
+	host, port, err := net.SplitHostPort(ep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return host, port
+}
+
+// A controlPlaneEndpoint without a port is valid for kubeadm, which gives it
+// the node's bindPort. The guard must probe that same endpoint: before the
+// port was added, the probe failed on the missing port and the guard was off.
+func TestRunInitRefusedBehindAPortlessEndpoint(t *testing.T) {
+	host, port := splitTestEndpoint(t, tlsServerAnswering(t, http.StatusForbidden))
+	fr := &fakeRunner{respond: func(args []string) (kubeadm.Result, error) {
+		if args[0] == "version" {
+			return kubeadm.Result{Stdout: "v1.37.0\n"}, nil
+		}
+		return kubeadm.Result{}, nil
+	}}
+	cluster := clusterplugin.Cluster{
+		Role:             clusterplugin.RoleInit,
+		ClusterToken:     validToken(),
+		ControlPlaneHost: host,
+		ProviderOptions:  map[string]string{"cluster_root_path": t.TempDir()},
+		Options: "clusterConfiguration:\n  controlPlaneEndpoint: " + host + "\n" +
+			"initConfiguration:\n  localAPIEndpoint:\n    bindPort: " + port + "\n",
+	}
+	opts, sink := hermeticRunOptions(t, fr)
+	opts.CPReachableProbe = nil
+	err := Run(context.Background(), cluster, opts)
+	if !errors.Is(err, reconcile.ErrTerminal) {
+		t.Fatalf("Run error = %v, want a terminal refusal", err)
+	}
+	if fr.called("init") {
+		t.Fatal("kubeadm init ran against a port-less endpoint where an apiserver answers")
+	}
+	if got := sink.only(t); got.Reason != status.ReasonInitRefused {
+		t.Fatalf("recorded reason=%q, want %q", got.Reason, status.ReasonInitRefused)
+	}
+}
+
+// A worker whose only endpoint is a port-less controlPlaneEndpoint finds the
+// control plane at host:bindPort and hands kubeadm a discovery endpoint with
+// the port, which kubeadm requires. Before, the probe never succeeded and the
+// join waited out its budget.
+func TestRunWorkerJoinsThroughAPortlessEndpoint(t *testing.T) {
+	ep := tlsServerAnswering(t, http.StatusForbidden)
+	host, port := splitTestEndpoint(t, ep)
+	var discovery string
+	fr := &fakeRunner{respond: func(args []string) (kubeadm.Result, error) {
+		switch args[0] {
+		case "version":
+			return kubeadm.Result{Stdout: "v1.37.0\n"}, nil
+		case "join":
+			if len(args) > 2 && args[1] == "--config" {
+				b, err := os.ReadFile(args[2])
+				if err != nil {
+					return kubeadm.Result{}, err
+				}
+				for _, l := range strings.Split(string(b), "\n") {
+					if v, ok := strings.CutPrefix(strings.TrimSpace(l), "apiServerEndpoint:"); ok {
+						discovery = strings.TrimSpace(v)
+					}
+				}
+			}
+		}
+		return kubeadm.Result{}, nil
+	}}
+	cluster := clusterplugin.Cluster{
+		Role:             clusterplugin.RoleWorker,
+		ClusterToken:     validToken(),
+		ControlPlaneHost: host,
+		ProviderOptions:  map[string]string{"cluster_root_path": t.TempDir()},
+		Options: "clusterConfiguration:\n  controlPlaneEndpoint: " + host + "\n" +
+			"initConfiguration:\n  localAPIEndpoint:\n    bindPort: " + port + "\n" +
+			"joinConfiguration:\n  discovery:\n    bootstrapToken:\n" +
+			"      token: abcdef.0123456789abcdef\n      caCertHashes:\n      - sha256:deadbeef\n",
+	}
+	opts, sink := hermeticRunOptions(t, fr)
+	opts.CPReachableProbe = nil
+	// Bounded: without the port the join would wait for the control plane
+	// until the reconcile budget ran out.
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := Run(ctx, cluster, opts); err != nil {
+		t.Fatalf("worker join through a port-less endpoint failed: %v", err)
+	}
+	if discovery != ep {
+		t.Fatalf("kubeadm join got discovery apiServerEndpoint %q, want %q", discovery, ep)
+	}
+	if got := sink.only(t); got.Phase != status.PhaseConverged || got.LastAction != string(reconcile.ActionRunJoin) {
+		t.Fatalf("recorded phase=%q lastAction=%q, want %q after %q", got.Phase, got.LastAction, status.PhaseConverged, reconcile.ActionRunJoin)
 	}
 }

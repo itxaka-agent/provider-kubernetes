@@ -101,6 +101,14 @@ Notes:
 
 - The provider auto-adds the `controlPlaneEndpoint` host (and the
   `control_plane_host`) to `certSANs` so TLS to the endpoint validates.
+- A `controlPlaneEndpoint` without a port gets the node's `bindPort`, 6443
+  when unset, as kubeadm gives it: `initConfiguration.localAPIEndpoint.bindPort`,
+  or on a control-plane join `joinConfiguration.controlPlane.localAPIEndpoint.bindPort`.
+  The provider writes the port into the generated configuration, so the
+  control-plane check, a join's discovery endpoint and the join health gate
+  all use the endpoint kubeadm uses. Writing the port yourself is clearer,
+  and necessary when the load balancer listens on a different port from
+  `bindPort`.
 - `discovery.bootstrapToken.apiServerEndpoint` is the address **this node** dials
   to join, and it wins over `controlPlaneEndpoint` / `control_plane_host` for the
   join (and for the pre-join reachability wait). A bare host gets `:6443`
@@ -112,10 +120,10 @@ Notes:
   in (or pass `--advertise-address`).
 - Token discovery **requires** `caCertHashes`; the provider refuses to emit a
   join config without a CA anchor and never sets `unsafeSkipCAVerification`.
-- `bindPort` defaults to kubeadm's 6443. If you move it, `controlPlaneEndpoint`,
-  `control_plane_host` and every joiner's `apiServerEndpoint` have to carry the
-  same port: the provider's local-API health probe follows `bindPort`, and its
-  control-plane reachability probe dials `control_plane_host` literally. See
+- `bindPort` defaults to kubeadm's 6443. If you move it, give
+  `control_plane_host` and every joiner's `apiServerEndpoint` the port
+  explicitly: a bare host there gets 6443, not `bindPort`. The provider's
+  local-API health probe follows `bindPort`. See
   [`samples/custom-api-port/`](../samples/custom-api-port/).
 - Keys the provider does not read are ignored, not passed through to kubeadm.
   The block above is the read surface. In particular a `kubeletConfiguration`

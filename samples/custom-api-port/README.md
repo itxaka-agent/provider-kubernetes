@@ -17,8 +17,8 @@ They must all agree, or the node converges slowly or not at all.
 | Where | Why |
 |-------|-----|
 | `initConfiguration.localAPIEndpoint.bindPort` | kubeadm renders it as the API server's `--secure-port`. |
-| `clusterConfiguration.controlPlaneEndpoint` | Baked into the serving certificate and dialed by every node. |
-| `cluster.control_plane_host` | The provider's reachability probe dials this literally. A bare host with no port gets `:6443` appended. |
+| `clusterConfiguration.controlPlaneEndpoint` | Baked into the serving certificate and dialed by every node. Without a port it gets `bindPort`, as kubeadm gives it. |
+| `cluster.control_plane_host` | The endpoint when `controlPlaneEndpoint` is unset. A bare host with no port gets `:6443` appended, not `bindPort`. |
 | each joiner's `discovery.bootstrapToken.apiServerEndpoint` | Where `kubeadm join` talks to the control plane. |
 
 For an additional control plane, the joining node's own port lives in

@@ -1,6 +1,8 @@
 package provider
 
 import (
+	"net"
+	"strings"
 	"testing"
 
 	"github.com/kairos-io/provider-kubernetes/internal/kubeadmconfig"
@@ -294,6 +296,94 @@ func TestBuildInputCarriesJoinAPIServerEndpoint(t *testing.T) {
 	}
 	if in.ControlPlaneEndpoint != "192.168.1.10:6443" {
 		t.Fatalf("ControlPlaneEndpoint = %q, want it left alone", in.ControlPlaneEndpoint)
+	}
+}
+
+func TestWithBindPort(t *testing.T) {
+	for _, tc := range []struct {
+		endpoint string
+		bindPort int32
+		want     string
+	}{
+		{"", 0, ""},
+		{"lb.example.test", 0, "lb.example.test:6443"},
+		{"lb.example.test", 7443, "lb.example.test:7443"},
+		{"lb.example.test:8443", 7443, "lb.example.test:8443"},
+		{"10.0.0.5", 0, "10.0.0.5:6443"},
+		{"10.0.0.5:6443", 0, "10.0.0.5:6443"},
+		{"fd00::5", 0, "[fd00::5]:6443"},
+		{"[fd00::5]:7443", 0, "[fd00::5]:7443"},
+		// Not a bare host: left for kubeadm to reject with its own message.
+		{"https://lb.example.test:6443", 0, "https://lb.example.test:6443"},
+		{"[fd00::5]", 0, "[fd00::5]"},
+		{"fe80::1%eth0", 0, "fe80::1%eth0"},
+		{"lb example", 0, "lb example"},
+	} {
+		if got := withBindPort(tc.endpoint, tc.bindPort); got != tc.want {
+			t.Errorf("withBindPort(%q, %d) = %q, want %q", tc.endpoint, tc.bindPort, got, tc.want)
+		}
+	}
+}
+
+// kubeadm accepts a controlPlaneEndpoint without a port and gives it the
+// node's bindPort; BuildInput must hand on the same endpoint, port included,
+// because the probe, the /readyz gate and a join's discovery endpoint need it.
+func TestBuildInputPortlessControlPlaneEndpoint(t *testing.T) {
+	for _, tc := range []struct {
+		name, role, raw, want string
+	}{
+		{"init, default bindPort", "init",
+			"clusterConfiguration:\n  controlPlaneEndpoint: lb.example.test\n",
+			"lb.example.test:6443"},
+		{"init, custom bindPort", "init",
+			"clusterConfiguration:\n  controlPlaneEndpoint: lb.example.test\ninitConfiguration:\n  localAPIEndpoint:\n    bindPort: 7443\n",
+			"lb.example.test:7443"},
+		{"controlplane join, its own bindPort", "controlplane",
+			"clusterConfiguration:\n  controlPlaneEndpoint: lb.example.test\ninitConfiguration:\n  localAPIEndpoint:\n    bindPort: 7443\njoinConfiguration:\n  controlPlane:\n    localAPIEndpoint:\n      bindPort: 8443\n",
+			"lb.example.test:8443"},
+		{"worker, the init bindPort", "worker",
+			"clusterConfiguration:\n  controlPlaneEndpoint: lb.example.test\ninitConfiguration:\n  localAPIEndpoint:\n    bindPort: 7443\n",
+			"lb.example.test:7443"},
+		{"bare IPv6", "init",
+			"clusterConfiguration:\n  controlPlaneEndpoint: fd00::10\n",
+			"[fd00::10]:6443"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			uc, err := ParseUserConfig(tc.raw)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			in, _, err := BuildInput(Context{Role: tc.role, ControlPlaneHost: "10.0.0.1"}, uc, "v1.37.0")
+			if err != nil {
+				t.Fatalf("BuildInput: %v", err)
+			}
+			if in.ControlPlaneEndpoint != tc.want {
+				t.Fatalf("ControlPlaneEndpoint = %q, want %q", in.ControlPlaneEndpoint, tc.want)
+			}
+			host := stripPort(tc.want)
+			if !containsAll(in.CertSANs, []string{host}) {
+				t.Fatalf("certSANs %v lack the endpoint host %q", in.CertSANs, host)
+			}
+			// What the probe dials and, for a join without its own
+			// apiServerEndpoint, what kubeadm's discovery gets: both need the port.
+			if got := joinDialEndpoint(actualstate.Role(tc.role), in); got != tc.want {
+				t.Fatalf("probe target = %q, want %q", got, tc.want)
+			}
+			if tc.role != "init" {
+				in.JoinToken = "abcdef.0123456789abcdef"
+				in.CACertHashes = []string{"sha256:" + strings.Repeat("a", 64)}
+				in.JoinAsControlPlane = tc.role == "controlplane"
+				in.CertificateKey = strings.Repeat("b", 64)
+				jc, err := kubeadmconfig.BuildJoinConfiguration(in)
+				if err != nil {
+					t.Fatalf("BuildJoinConfiguration: %v", err)
+				}
+				ep := jc.Discovery.BootstrapToken.APIServerEndpoint
+				if _, _, err := net.SplitHostPort(ep); err != nil || ep != tc.want {
+					t.Fatalf("discovery apiServerEndpoint = %q (%v), want %q: kubeadm rejects one without a port", ep, err, tc.want)
+				}
+			}
+		})
 	}
 }
 

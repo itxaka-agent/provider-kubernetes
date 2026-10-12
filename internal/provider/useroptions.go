@@ -3,6 +3,7 @@ package provider
 import (
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 
 	"github.com/kairos-io/provider-kubernetes/internal/kubeadmconfig"
@@ -92,7 +93,8 @@ func ParseUserConfig(raw string) (UserConfig, error) {
 // into a non-credential kubeadmconfig.Input. resolvedVersion is the kubeadm
 // version resolved at runtime (ADR-3); pass "" to fall back to the user-specified
 // kubernetesVersion. User-specified controlPlaneEndpoint takes precedence over the
-// value derived from ControlPlaneHost.
+// value derived from ControlPlaneHost; without a port it gets this node's
+// bindPort, as kubeadm gives it (withBindPort).
 //
 // HA-1: at role=init, a warning is emitted (not a hard fail) if the
 // controlPlaneEndpoint is absent or equals only the bare node IP (single-node
@@ -107,7 +109,8 @@ func BuildInput(ctx Context, uc UserConfig, resolvedVersion string) (kubeadmconf
 		return kubeadmconfig.Input{}, "", err
 	}
 
-	cpEndpoint := uc.ClusterConfiguration.ControlPlaneEndpoint
+	bindPort := localBindPort(actualstate.Role(ctx.Role), uc)
+	cpEndpoint := withBindPort(uc.ClusterConfiguration.ControlPlaneEndpoint, bindPort)
 	if cpEndpoint == "" {
 		cpEndpoint = endpoint
 	}
@@ -161,7 +164,6 @@ func BuildInput(ctx Context, uc UserConfig, resolvedVersion string) (kubeadmconf
 			advertiseAddress = uc.JoinConfiguration.ControlPlane.LocalAPIEndpoint.AdvertiseAddress
 		}
 	}
-	bindPort := localBindPort(actualstate.Role(ctx.Role), uc)
 
 	return kubeadmconfig.Input{
 		KubernetesVersion:    version,
@@ -198,6 +200,32 @@ func normalizeJoinEndpoint(ep string) string {
 		return ep
 	}
 	return net.JoinHostPort(ep, defaultAPIServerPort)
+}
+
+// withBindPort returns an operator-supplied controlPlaneEndpoint with its port.
+// kubeadm accepts one without a port and gives it the node's bindPort
+// (GetControlPlaneEndpoint), but the provider needs the port everywhere it
+// uses the endpoint: the reachability probe dials it, the /readyz gate builds
+// a URL from it, and a join falls back to it for
+// discovery.bootstrapToken.apiServerEndpoint, which kubeadm rejects without a
+// port. So a bare host name or IP address gets bindPort (6443 when unset),
+// the endpoint kubeadm itself would use. Anything else, including an empty
+// value, is returned unchanged, for kubeadm to judge.
+func withBindPort(endpoint string, bindPort int32) string {
+	if endpoint == "" {
+		return ""
+	}
+	if _, _, err := net.SplitHostPort(endpoint); err == nil {
+		return endpoint
+	}
+	if net.ParseIP(endpoint) == nil && strings.ContainsAny(endpoint, ":/[]@ \t") {
+		return endpoint
+	}
+	port := defaultAPIServerPort
+	if bindPort > 0 {
+		port = strconv.Itoa(int(bindPort))
+	}
+	return net.JoinHostPort(endpoint, port)
 }
 
 // ValidateControlPlaneEndpoint validates the controlPlaneEndpoint for HA-1
