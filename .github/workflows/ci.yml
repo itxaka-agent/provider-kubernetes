@@ -119,9 +119,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4
-
       - name: Resolve Kubernetes patch + commit + crictl versions
         id: ver
         run: |
@@ -419,9 +416,6 @@ jobs:
         with:
           go-version-file: go.mod
           check-latest: false
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4
 
       - name: Resolve Kubernetes patch + commit + crictl versions
         id: ver
