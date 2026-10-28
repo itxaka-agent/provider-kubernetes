@@ -43,7 +43,7 @@ ARG KAIROS_BASE_IMAGE=ghcr.io/kairos-io/hadron:v0.4.0@sha256:1e19d9cd5a70dfc6940
 ARG KAIROS_INIT_IMAGE=quay.io/kairos/kairos-init:v0.14.6@sha256:e53eb7e5ada035e7e192f072f9e041ca5d60440ecf8c766c32e7d95253b293e7
 # Provider toolchain: its tag MUST match the go.mod `go` directive (enforced by
 # `make verify-pins`), so the image build never drifts from CI.
-ARG GO_BUILDER_IMAGE=golang:1.27.2-alpine@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d
+ARG GO_BUILDER_IMAGE=golang:1.27.3-alpine@sha256:b8c9b82affbbb82a020bbcf998dad2ba9516944ac7e883524642a481a9505e9c
 ARG TARGETARCH=amd64
 
 # containerd and kubelet are ALWAYS built fully static from source: Hadron is
@@ -113,7 +113,7 @@ RUN go build \
 # kubeadm/kubectl/crictl are already static and run on musl unchanged. kubelet is
 # NOT downloaded here -- it is built static from source (see kubelet-build).
 # ----------------------------------------------------------------------------
-FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6 AS k8s-binaries
+FROM alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a AS k8s-binaries
 ARG KUBERNETES_VERSION
 ARG CRICTL_VERSION
 ARG TARGETARCH
@@ -156,7 +156,7 @@ RUN set -eu; \
 # (runc, CNI). containerd is built static from source (see containerd-build);
 # runc and the CNI plugins are already static and run on musl unchanged.
 # ----------------------------------------------------------------------------
-FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6 AS runtime-binaries
+FROM alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a AS runtime-binaries
 ARG RUNC_VERSION
 ARG CNI_PLUGINS_VERSION
 ARG TARGETARCH
@@ -308,7 +308,7 @@ RUN set -eux; \
 # TARGETARCH is passed explicitly: crane pull selects that platform from each
 # verified multi-arch index (crane's implicit default is linux/amd64).
 # ----------------------------------------------------------------------------
-FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6 AS image-bundler
+FROM alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a AS image-bundler
 ARG KUBERNETES_VERSION
 ARG TARGETARCH
 # crane + cosign are static Go binaries that run on musl; both are version-pinned
