@@ -457,3 +457,34 @@ func TestRunProductionAPIServerProbeFollowsBindPort(t *testing.T) {
 		t.Fatalf("recorded phase=%q lastAction=%q, want %q after %q", got.Phase, got.LastAction, status.PhaseConverged, reconcile.ActionUpgradeApply)
 	}
 }
+
+func TestRunRejectsUnsupportedRoleAsConfigInvalid(t *testing.T) {
+	for _, role := range []clusterplugin.Role{"", "master", "control-plane", "Worker"} {
+		t.Run(string(role), func(t *testing.T) {
+			fr := &fakeRunner{}
+			opts, sink := hermeticRunOptions(t, fr)
+			err := Run(context.Background(), clusterplugin.Cluster{
+				Role:             role,
+				ClusterToken:     validToken(),
+				ControlPlaneHost: "10.0.0.1",
+			}, opts)
+			if err == nil {
+				t.Fatalf("Run with role %q returned nil, want an error", role)
+			}
+			if len(fr.calls) != 0 {
+				t.Fatalf("Run with role %q called kubeadm: %v", role, fr.calls)
+			}
+			st := sink.only(t)
+			if st.Phase == status.PhaseConverged || st.Outcome == status.OutcomeSuccess {
+				t.Fatalf("role %q reported phase=%s outcome=%s, want a failure", role, st.Phase, st.Outcome)
+			}
+			if st.Phase != status.PhaseFailed || st.Reason != status.ReasonConfigInvalid || !st.Terminal {
+				t.Fatalf("got phase=%s reason=%s terminal=%v, want Failed/ConfigInvalid/terminal",
+					st.Phase, st.Reason, st.Terminal)
+			}
+			if !strings.Contains(st.Message, "controlplane") {
+				t.Fatalf("message %q does not list the valid roles", st.Message)
+			}
+		})
+	}
+}

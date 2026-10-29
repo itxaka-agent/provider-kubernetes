@@ -1,7 +1,11 @@
 package provider
 
 import (
+	"fmt"
+
 	"github.com/kairos-io/kairos-sdk/clusterplugin"
+
+	"github.com/kairos-io/provider-kubernetes/internal/reconcile/actualstate"
 )
 
 const (
@@ -48,11 +52,15 @@ type Context struct {
 }
 
 // NewContext parses and validates a Cluster into a provider Context. It fails
-// fast on invalid input (e.g. an empty/too-short cluster_token) so the provider
-// never proceeds on bad configuration.
+// fast on invalid input (e.g. an empty/too-short cluster_token or a role other
+// than init, controlplane or worker) so the provider never proceeds on bad
+// configuration.
 func NewContext(cluster clusterplugin.Cluster) (Context, error) {
 	warning, err := ValidateClusterToken(cluster.ClusterToken)
 	if err != nil {
+		return Context{}, err
+	}
+	if err := validateRole(cluster.Role); err != nil {
 		return Context{}, err
 	}
 
@@ -72,4 +80,16 @@ func NewContext(cluster clusterplugin.Cluster) (Context, error) {
 		ClusterConfigPath: cluster.ClusterConfigPath,
 		TokenWarning:      warning,
 	}, nil
+}
+
+// validateRole accepts only the exact role names the reconcile planner acts on.
+// Anything else (empty, "master", "control-plane", "Worker", ...) would plan no
+// action at all and leave the node looking converged.
+func validateRole(role clusterplugin.Role) error {
+	switch actualstate.Role(role) {
+	case actualstate.RoleInit, actualstate.RoleControlPlane, actualstate.RoleWorker:
+		return nil
+	}
+	return fmt.Errorf("unsupported cluster role %q: must be one of %q, %q or %q",
+		string(role), actualstate.RoleInit, actualstate.RoleControlPlane, actualstate.RoleWorker)
 }
