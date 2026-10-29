@@ -94,6 +94,45 @@ func TestNewContextRejectsBadToken(t *testing.T) {
 	}
 }
 
+func TestNewContextValidatesRole(t *testing.T) {
+	tests := []struct {
+		role    clusterplugin.Role
+		wantErr bool
+	}{
+		{role: "init"},
+		{role: "controlplane"},
+		{role: "worker"},
+		{role: "", wantErr: true},
+		{role: "control-plane", wantErr: true},
+		{role: "master", wantErr: true},
+		{role: "Worker", wantErr: true},
+		{role: "INIT", wantErr: true},
+		{role: " worker", wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(string(tc.role), func(t *testing.T) {
+			ctx, err := NewContext(clusterplugin.Cluster{Role: tc.role, ClusterToken: validToken()})
+			if !tc.wantErr {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if ctx.Role != string(tc.role) {
+					t.Fatalf("Role = %q, want %q", ctx.Role, tc.role)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected an error for role %q", tc.role)
+			}
+			for _, valid := range []string{"init", "controlplane", "worker"} {
+				if !strings.Contains(err.Error(), valid) {
+					t.Errorf("error %q does not list valid role %q", err, valid)
+				}
+			}
+		})
+	}
+}
+
 func TestProviderReturnsPromptlyAndNamed(t *testing.T) {
 	// Valid input -> a named YipConfig with the reconcile stage, no panic.
 	cfg := Provider(clusterplugin.Cluster{Role: clusterplugin.RoleInit, ClusterToken: validToken()})
