@@ -12,9 +12,18 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// writeContent writes the transient file content. It is a variable so tests can
+// simulate a failing write (a full tmpfs) without filling a real filesystem.
+var writeContent = func(f *os.File, content string) error {
+	_, err := f.WriteString(content)
+	return err
+}
+
 // WriteTransient writes content to a fresh 0600 file under dir (ephemeral
 // storage) and returns the file path. The caller is responsible for calling
-// Shred on the returned path after use.
+// Shred on the returned path after use. If anything fails after the file is
+// created, the file is removed before returning, so a failed write (for example
+// ENOSPC on a full tmpfs) never leaves a partial secret behind.
 func WriteTransient(dir, content string) (string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("create run dir: %w", err)
@@ -23,14 +32,23 @@ func WriteTransient(dir, content string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("create transient config: %w", err)
 	}
-	defer func() { _ = f.Close() }()
+	name := f.Name()
+	fail := func(err error) (string, error) {
+		_ = f.Close()
+		Shred(name)
+		return "", err
+	}
 	if err := f.Chmod(0o600); err != nil {
-		return "", fmt.Errorf("chmod transient config: %w", err)
+		return fail(fmt.Errorf("chmod transient config: %w", err))
 	}
-	if _, err := f.WriteString(content); err != nil {
-		return "", fmt.Errorf("write transient config: %w", err)
+	if err := writeContent(f, content); err != nil {
+		return fail(fmt.Errorf("write transient config: %w", err))
 	}
-	return f.Name(), nil
+	if err := f.Close(); err != nil {
+		Shred(name)
+		return "", fmt.Errorf("close transient config: %w", err)
+	}
+	return name, nil
 }
 
 // Shred best-effort overwrites then removes a transient secret file. On tmpfs

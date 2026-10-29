@@ -1,6 +1,7 @@
 package securefile
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -94,4 +95,30 @@ func TestSweepRunDirRemovesTransientFiles(t *testing.T) {
 func TestSweepRunDirNonExistentDir(t *testing.T) {
 	// Must not panic or fail.
 	SweepRunDir("/tmp/does-not-exist-sweep-test-12345")
+}
+
+func TestWriteTransientRemovesFileWhenWriteFails(t *testing.T) {
+	dir := t.TempDir()
+	orig := writeContent
+	t.Cleanup(func() { writeContent = orig })
+	writeContent = func(f *os.File, content string) error {
+		// Write part of the content, then fail like a full tmpfs would.
+		_, _ = f.WriteString(content[:4])
+		return errors.New("no space left on device")
+	}
+
+	path, err := WriteTransient(dir, "secret: value\n")
+	if err == nil {
+		t.Fatal("expected an error when the write fails")
+	}
+	if path != "" {
+		t.Fatalf("expected an empty path on error, got %q", path)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read dir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected no leftover files, found %d", len(entries))
+	}
 }
