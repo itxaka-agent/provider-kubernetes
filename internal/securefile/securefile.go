@@ -8,8 +8,16 @@ package securefile
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
+	"syscall"
 
 	"github.com/sirupsen/logrus"
+)
+
+const (
+	transientPrefix = "kubeadm-"
+	transientSuffix = ".yaml"
 )
 
 // WriteTransient writes content to a fresh 0600 file under dir (ephemeral
@@ -37,18 +45,55 @@ func WriteTransient(dir, content string) (string, error) {
 // (/run) removal already prevents persistence; the overwrite is defense-in-depth.
 // A lingering secret file is a real risk so failures are logged rather than silently
 // swallowed (Design Principle 5).
+//
+// Shred never follows symlinks: a symlink at path is removed without touching
+// its target, and other non-regular files are left alone.
 func Shred(path string) {
-	if info, err := os.Stat(path); err == nil {
-		_ = os.WriteFile(path, make([]byte, info.Size()), 0o600)
+	info, err := os.Lstat(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			logrus.Debugf("provider-kubernetes: failed to stat transient secret file %s: %v", path, err)
+		}
+		return
+	}
+	switch {
+	case info.Mode().IsRegular():
+		zero(path, info)
+	case info.Mode()&os.ModeSymlink != 0:
+	default:
+		logrus.Warnf("provider-kubernetes: refusing to shred non-regular file %s (%s)", path, info.Mode().Type())
+		return
 	}
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		logrus.Debugf("provider-kubernetes: failed to remove transient secret file %s: %v", path, err)
 	}
 }
 
+// zero overwrites the regular file at path with zeros. The file is opened with
+// O_NOFOLLOW and checked against the Lstat result so a path swapped for a
+// symlink or another file in between is not written through.
+func zero(path string, info os.FileInfo) {
+	f, err := os.OpenFile(path, os.O_WRONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		logrus.Debugf("provider-kubernetes: failed to open transient secret file %s for overwrite: %v", path, err)
+		return
+	}
+	defer func() { _ = f.Close() }()
+	opened, err := f.Stat()
+	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(info, opened) {
+		logrus.Warnf("provider-kubernetes: transient secret file %s changed before overwrite, not zeroing", path)
+		return
+	}
+	if _, err := f.Write(make([]byte, opened.Size())); err != nil {
+		logrus.Debugf("provider-kubernetes: failed to overwrite transient secret file %s: %v", path, err)
+	}
+}
+
 // SweepRunDir removes all kubeadm-*.yaml transient config files from dir that
 // may have been left by an interrupted join. It is called during reset to ensure
 // no stale credential-bearing files persist. Non-fatal: failures are logged.
+// Only names WriteTransient can produce are matched; each match goes through
+// Shred, so symlinks are removed without touching their targets.
 func SweepRunDir(dir string) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -62,10 +107,16 @@ func SweepRunDir(dir string) {
 			continue
 		}
 		name := e.Name()
-		// Match the pattern used by WriteTransient: "kubeadm-*.yaml"
-		if len(name) > 12 && name[:7] == "kubeadm" && name[len(name)-5:] == ".yaml" {
-			p := dir + "/" + name
-			Shred(p)
+		if isTransientName(name) {
+			Shred(filepath.Join(dir, name))
 		}
 	}
+}
+
+// isTransientName reports whether name matches the "kubeadm-*.yaml" pattern
+// WriteTransient passes to os.CreateTemp, with a non-empty random part.
+func isTransientName(name string) bool {
+	return len(name) > len(transientPrefix)+len(transientSuffix) &&
+		strings.HasPrefix(name, transientPrefix) &&
+		strings.HasSuffix(name, transientSuffix)
 }
