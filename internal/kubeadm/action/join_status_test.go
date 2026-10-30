@@ -63,8 +63,11 @@ func TestRunJoinRejectedByControlPlaneStatusReason(t *testing.T) {
 	if !res.BudgetExhausted {
 		t.Fatalf("expected the join budget to be exhausted, got %+v", res)
 	}
-	if s.Reason != status.ReasonControlPlaneUnreachable {
-		t.Errorf("reason = %q, want %q", s.Reason, status.ReasonControlPlaneUnreachable)
+	if s.Reason != status.ReasonJoinTimeout {
+		t.Errorf("reason = %q, want %q", s.Reason, status.ReasonJoinTimeout)
+	}
+	if s.Terminal {
+		t.Error("terminal = true, want false (a rejected join may succeed on a later boot)")
 	}
 }
 
@@ -80,14 +83,14 @@ func TestRunJoinWithoutMaterialStatusReason(t *testing.T) {
 	}
 
 	s, res := joinFailureStatus(t, e)
-	if res.Attempts != 3 {
-		t.Errorf("attempts = %d, want 3", res.Attempts)
+	if res.Attempts != 1 || res.BudgetExhausted {
+		t.Errorf("result = %+v, want one attempt and no budget exhaustion", res)
 	}
-	if s.Terminal {
-		t.Error("terminal = true, want false")
+	if !s.Terminal {
+		t.Error("terminal = false, want true")
 	}
-	if s.Reason != status.ReasonControlPlaneUnreachable {
-		t.Errorf("reason = %q, want %q", s.Reason, status.ReasonControlPlaneUnreachable)
+	if s.Reason != status.ReasonConfigInvalid {
+		t.Errorf("reason = %q, want %q", s.Reason, status.ReasonConfigInvalid)
 	}
 	if len(fr.calls) != 0 {
 		t.Errorf("kubeadm was called without join material: %v", fr.calls)
